@@ -3,8 +3,14 @@ members = [".", "tests"]
 
 [package]
 name = "rs-pkg"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+description = "rust pkg for programming"
+repository = "https://github.com/CrazyThursdayV50/rs-pkg"
+readme = "README.md"
+keywords = ["pkg"]
+categories = ["rust-patterns"]
+license = "MIT"
 
 [dependencies]
 async-trait = "0.1.88"
