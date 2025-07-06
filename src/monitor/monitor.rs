@@ -1,4 +1,5 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use futures_util::future::BoxFuture;
+use std::{future::Future, sync::Arc};
 use tokio::sync::{
     Mutex,
     mpsc::{Receiver, Sender, error::SendError},
@@ -6,19 +7,9 @@ use tokio::sync::{
 use tracing::debug;
 use tracing::{Instrument, debug_span};
 
-type WrappedFn = Arc<
-    Mutex<
-        Option<
-            Box<
-                dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
-    >,
->;
+type WrappedFn = Arc<Mutex<Option<Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send + Sync>>>>;
 
+#[derive(Clone)]
 pub struct Monitor {
     name: String,
     on_start: WrappedFn,
@@ -37,7 +28,6 @@ where
 
 fn debug_task(msg: String) -> WrappedFn {
     wrap(|| async move {
-        let msg = msg.to_string();
         debug!("{}", msg);
     })
 }
@@ -55,6 +45,11 @@ impl Monitor {
             done: Arc::new(Mutex::new(done)),
             close: Arc::new(close),
         }
+    }
+
+    pub fn with_trigger(mut self, trigger: (Arc<Sender<()>>, Arc<Mutex<Receiver<()>>>)) -> Self {
+        (self.close, self.done) = trigger;
+        self
     }
 
     pub fn with_on_start<F, Fut>(mut self, task: F) -> Self
@@ -102,7 +97,7 @@ impl Monitor {
 
                 // 运行 on_exit
                 if let Some(on_exit_fn) = on_exit.lock().await.take() {
-                    on_exit_fn().instrument(debug_span!("call")).await;
+                    on_exit_fn().await;
                 };
             }
             .instrument(debug_span!("exit")),
@@ -111,9 +106,9 @@ impl Monitor {
         // 运行 task
         _ = tokio::spawn(
             async move {
-                task(task_done).instrument(debug_span!("call")).await;
+                task(task_done).await;
             }
-            .instrument(debug_span!("spawn")),
+            .instrument(debug_span!("call")),
         );
     }
 

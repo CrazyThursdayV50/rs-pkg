@@ -1,4 +1,4 @@
-use rs_pkg::cron::{Config, Cron};
+use rs_pkg::cron::{Cron, CronConfig};
 use rs_pkg::log;
 use tracing::debug;
 
@@ -12,9 +12,10 @@ async fn test_cron() {
 
     log::init_default();
 
-    let mut cfg = Config::default();
+    let mut cfg = CronConfig::default();
     cfg.interval = "1s".to_string();
     cfg.run_after_start = "10ms".to_string();
+    cfg.interval_after_finish = false;
 
     let cron = Cron::new("TestCron", &cfg);
     _ = cron

@@ -12,6 +12,7 @@ use tokio::sync::{
 };
 use tracing::{Instrument, debug, debug_span};
 
+#[derive(Clone)]
 pub struct Worker<J> {
     name: String,
     work_count: Arc<Mutex<usize>>,
@@ -28,7 +29,7 @@ async fn handle<F, Fut, J>(
     graceful: bool,
 ) where
     F: Fn(J) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
     J: Send + Sync + 'static,
 {
     match graceful {
@@ -49,7 +50,7 @@ async fn handle<F, Fut, J>(
                                 let mut guard = trigger.lock().await;
                                 if let Ok(item) = guard.try_recv() {
                                     drop(guard); // 释放锁，避免在异步调用时持有锁
-                                    how(item).instrument(debug_span!("how")).await;
+                                    how(item).await;
                                 }
                             }
                         }
@@ -68,14 +69,14 @@ async fn handle<F, Fut, J>(
                         match guard.recv().await {
                             Some(item) => {
                                 drop(guard); // 释放锁，避免在异步调用时持有锁
-                                how(item).instrument(debug_span!("how")).await;
+                                how(item).await;
                             }
 
                             None => return,
                         }
                     }
                 }
-                .instrument(debug_span!("handle")),
+                .instrument(debug_span!("grace")),
             );
         }
     }
@@ -95,15 +96,33 @@ impl<J> Worker<J> {
         }
     }
 
+    pub fn with_on_start<F, Fut>(mut self, task: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.monitor = self.monitor.with_on_start(task);
+        self
+    }
+
+    pub fn with_on_exit<F, Fut>(mut self, task: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.monitor = self.monitor.with_on_exit(task);
+        self
+    }
+
     pub fn with_graceful(mut self, graceful: bool) -> Self {
         self.graceful = graceful;
         self
     }
 
-    pub fn with_trigger(mut self, trigger: (Sender<J>, Receiver<J>)) -> Self {
+    pub fn with_trigger(mut self, trigger: (Arc<Sender<J>>, Arc<Mutex<Receiver<J>>>)) -> Self {
         let (send, recv) = trigger;
-        self.send = Arc::new(send);
-        self.recv = Arc::new(Mutex::new(recv));
+        self.send = send;
+        self.recv = recv;
         self
     }
 
@@ -131,18 +150,16 @@ impl<J> Worker<J> {
     pub async fn run<F, Fut>(&self, how: F)
     where
         F: Fn(J) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
         J: Send + Sync + 'static,
     {
         debug!("WORKER START - {}", self.name);
         let trigger = self.recv.clone();
         let graceful = self.graceful;
+        let how = Arc::new(how);
         let task = move |done: Receiver<()>| async move {
             let done = Arc::new(Mutex::new(done));
-            let how = Arc::new(how);
-            handle(trigger, done, how, graceful)
-                // .instrument(debug_span!("handle"))
-                .await;
+            handle(trigger, done, how, graceful).await;
         };
 
         _ = self

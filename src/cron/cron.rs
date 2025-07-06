@@ -1,17 +1,17 @@
-use crate::{cron::Config, worker::Worker};
+use crate::{cron::CronConfig, worker::Worker};
 use duration_str;
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::{
         Mutex,
-        broadcast::{self, error::TryRecvError},
         mpsc::{self, Receiver, Sender, error::SendError},
     },
-    time::sleep,
+    time::{Instant, sleep, sleep_until},
 };
 use tracing::debug;
 use tracing::{Instrument, debug_span};
 
+#[derive(Clone)]
 pub struct Cron {
     name: String,
     run_after_start: Duration,
@@ -24,7 +24,7 @@ pub struct Cron {
 }
 
 impl Cron {
-    pub fn new(name: &str, cfg: &Config) -> Self {
+    pub fn new(name: &str, cfg: &CronConfig) -> Self {
         let worker = Worker::new(name, 1);
         let run_after_start = duration_str::parse(&cfg.run_after_start).unwrap();
         let interval = duration_str::parse(&cfg.interval).unwrap();
@@ -51,72 +51,86 @@ impl Cron {
     {
         let run_after_start = self.run_after_start;
         let interval = self.interval;
-        let ticker = crossbeam_channel::tick(self.interval);
         let wait = self.interval_after_finish;
         let done = self.done.clone();
-        let worker = self.worker.clone();
+        let handler_worker = self.worker.clone();
+        let tick_worker = Arc::new(Worker::new("Ticker", 1));
+        // let (tx, mut rx) = broadcast::channel(1);
         let how = Arc::new(how);
-        let name = self.name.clone();
-        let (tx, mut rx) = broadcast::channel(1);
 
+        let sender = self.worker.get_sender();
+        let tick_sender = sender.clone();
+        tick_worker
+            .run(move |t: Instant| {
+                let sender = tick_sender.clone();
+                async move {
+                    sleep_until(t).await;
+                    _ = sender.send(()).await;
+                }
+            })
+            .await;
+
+        let how_tick_worker = tick_worker.clone();
+        // 启动 worker
+        let how = move |_: ()| {
+            let how = how.clone();
+            let tick_worker = how_tick_worker.clone();
+            async move {
+                how()
+                    // .instrument(debug_span!("run"))
+                    .await;
+                let t = Instant::now().checked_add(interval);
+                if wait {
+                    if let Some(t) = t {
+                        _ = tick_worker.send(t).await;
+                    } else {
+                        sleep(interval).await;
+                        _ = tick_worker.send(Instant::now()).await;
+                    }
+                }
+            }
+        };
+
+        let name = self.name.clone();
+        let cron_ticker_worker = tick_worker.clone();
+        tokio::spawn(
+            async move {
+                let tick_worker = cron_ticker_worker.clone();
+                let sender = sender.clone();
+                debug!("CRON START - {}", name);
+                sleep(run_after_start).await;
+                _ = sender.send(()).await;
+
+                let mut t = Instant::now();
+                while !wait {
+                    if let Some(tt) = t.checked_add(interval) {
+                        t = tt;
+                        _ = tick_worker.send(t).await;
+                    } else {
+                        sleep(interval).await;
+                        _ = tick_worker.send(Instant::now()).await;
+                    }
+                }
+            }
+            .instrument(debug_span!("start")),
+        );
+
+        _ = self.worker.run(how).instrument(debug_span!("worker")).await;
+
+        let name = self.name.clone();
         tokio::spawn(
             async move {
                 let mut guard = done.lock().await;
                 _ = guard.recv().await;
                 guard.close();
-                _ = tx.send(());
+                // _ = tx.send(());
 
                 // 关闭 worker
-                _ = worker.stop().await;
+                _ = handler_worker.stop().await;
+                _ = tick_worker.stop().await;
                 debug!("CRON STOP - {}", name)
             }
             .instrument(debug_span!("exit")),
-        );
-
-        // 启动 worker
-        let how = move |_: ()| {
-            let how = how.clone();
-            async move { how().instrument(debug_span!("run")).await }
-        };
-        _ = self.worker.run(how).instrument(debug_span!("worker")).await;
-
-        let sender = self.worker.get_sender();
-        let name = self.name.clone();
-        tokio::spawn(
-            async move {
-                debug!("CRON START - {}", name);
-                sleep(run_after_start).await;
-                _ = sender.send(()).await;
-                match wait {
-                    false => loop {
-                        match rx.try_recv() {
-                            Ok(_) | Err(TryRecvError::Closed) => {
-                                break;
-                            }
-
-                            _ => {
-                                if let Ok(_) = ticker.recv() {
-                                    _ = sender.send(()).await;
-                                };
-                            }
-                        }
-                    },
-
-                    true => loop {
-                        match rx.try_recv() {
-                            Ok(_) | Err(TryRecvError::Closed) => {
-                                break;
-                            }
-
-                            _ => {
-                                sleep(interval).await;
-                                _ = sender.send(()).await;
-                            }
-                        }
-                    },
-                }
-            }
-            .instrument(debug_span!("run")),
         );
     }
 }
