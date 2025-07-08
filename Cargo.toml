@@ -20,5 +20,6 @@ log = "0.4.27"
 oneshot = "0.1.11"
 serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.46.0", features = ["full"] }
+tokio-tungstenite = "0.27.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["json", "time", "tracing"] }
