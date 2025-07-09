@@ -55,9 +55,9 @@ impl Cron {
         let wait = self.interval_after_finish;
         let done = self.done.clone();
         let worker = self.worker.clone();
-        let how = Arc::new(how);
         let name = self.name.clone();
         let (tx, mut rx) = broadcast::channel(1);
+        let how = Arc::new(how);
 
         tokio::spawn(
             async move {
@@ -78,6 +78,7 @@ impl Cron {
             let how = how.clone();
             async move { how().instrument(debug_span!("run")).await }
         };
+
         _ = self.worker.run(how).instrument(debug_span!("worker")).await;
 
         let sender = self.worker.get_sender();

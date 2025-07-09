@@ -95,6 +95,24 @@ impl<J> Worker<J> {
         }
     }
 
+    pub fn with_on_start<F, Fut>(mut self, task: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.monitor = self.monitor.with_on_start(task);
+        self
+    }
+
+    pub fn with_on_exit<F, Fut>(mut self, task: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + Sync + 'static,
+    {
+        self.monitor = self.monitor.with_on_exit(task);
+        self
+    }
+
     pub fn with_graceful(mut self, graceful: bool) -> Self {
         self.graceful = graceful;
         self
@@ -137,9 +155,10 @@ impl<J> Worker<J> {
         debug!("WORKER START - {}", self.name);
         let trigger = self.recv.clone();
         let graceful = self.graceful;
+        let how = Arc::new(how);
         let task = move |done: Receiver<()>| async move {
             let done = Arc::new(Mutex::new(done));
-            let how = Arc::new(how);
+            // let how = Arc::new(how);
             handle(trigger, done, how, graceful)
                 // .instrument(debug_span!("handle"))
                 .await;
