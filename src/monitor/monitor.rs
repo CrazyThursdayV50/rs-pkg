@@ -1,4 +1,5 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use futures_util::future::BoxFuture;
+use std::{future::Future, sync::Arc};
 use tokio::sync::{
     Mutex,
     mpsc::{Receiver, Sender, error::SendError},
@@ -6,19 +7,9 @@ use tokio::sync::{
 use tracing::debug;
 use tracing::{Instrument, debug_span};
 
-type WrappedFn = Arc<
-    Mutex<
-        Option<
-            Box<
-                dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
-    >,
->;
+type WrappedFn = Arc<Mutex<Option<Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send + Sync>>>>;
 
+#[derive(Clone)]
 pub struct Monitor {
     name: String,
     on_start: WrappedFn,
@@ -37,7 +28,6 @@ where
 
 fn debug_task(msg: String) -> WrappedFn {
     wrap(|| async move {
-        let msg = msg.to_string();
         debug!("{}", msg);
     })
 }

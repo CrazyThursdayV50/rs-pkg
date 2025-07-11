@@ -12,6 +12,7 @@ use tokio::sync::{
 };
 use tracing::{Instrument, debug, debug_span};
 
+#[derive(Clone)]
 pub struct Worker<J> {
     name: String,
     work_count: Arc<Mutex<usize>>,
